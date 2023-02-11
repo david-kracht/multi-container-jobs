@@ -1,0 +1,104 @@
+version: "3.9"
+
+networks: #network created via template (based on isolated subnets) defined via env. variables
+  subnet:
+    name: subnet_${COMPOSE_PROJECT_NAME}
+    ipam:
+      config:
+        - subnet: 192.168.${COMPOSE_PROJECT_NAME}.0/24
+
+x-container-template: &container-template
+  user: ${U_ID}:${G_ID}  # podman-compose needs user 0:0 mapped to the user calling podman, by default
+  privileged: true 
+  cap_add:
+    - NET_ADMIN
+  sysctls:
+    - net.ipv6.conf.all.disable_ipv6=0
+  entrypoint: []
+  working_dir: ${HOME}
+  environment: &container-template-env
+    SHARED_VOLUME: /shared_volume
+  volumes:
+    - .:/shared_volume
+    - ${HOME}:${HOME}
+  networks:
+    subnet:
+      aliases: []
+  command: |-
+    bash -c '
+    set -x ;
+    export IP=$$(hostname -I) ;
+
+  
+    bash -c "$$INSTALL" ;
+    bash -c "$$INSTALL_WAIT_AFTER" ;
+    bash -c "$$INSTALL_WAIT_FOR" ;
+    bash -c "$$EXECUTE" ;
+    bash -c "$$EXECUTE_WAIT_AFTER" ;
+    bash -c "$$EXECUTE_WAIT_FOR" ;
+    bash -c "$$END" ;
+    timeout 60 bash -c "$$END_WAIT_AFTER" ;
+    bash -c "$$END_WAIT_FOR" ;
+    '
+
+services:
+
+  c1:
+    <<: *container-template
+    image: python:3.9
+    container_name: c1_${COMPOSE_PROJECT_NAME}
+    hostname: c1
+    networks:
+      subnet:
+        aliases: ["c1"]
+        ipv4_address: 192.168.${COMPOSE_PROJECT_NAME}.10
+    environment:
+      <<: *container-template-env
+      CONTAINER_NAME: c1
+      INSTALL_WAIT_AFTER: |-
+        touch $$SHARED_VOLUME/INSTALL.c1.fd ;
+        echo "Wait for removal of INSTALL.c1.fd ..." ;
+        timeout 60 bash -c "while [ -f $$SHARED_VOLUME/INSTALL.c1.fd ]; do sleep 1; done;"
+      EXECUTE_WAIT_AFTER: |-
+        touch $$SHARED_VOLUME/EXECUTE.c1.fd ;
+        echo "Wait for removal of EXECUTE.c1.fd ..." ;
+        timeout 60 bash -c "while [ -f $$SHARED_VOLUME/EXECUTE.c1.fd ]; do sleep 1; done;"
+      INSTALL: |-
+        set -x ;
+        echo install_cmd_prefix A install_option A.a ;
+        echo "No post_install_cmd." ;
+      EXECUTE: |-
+        sleep 60
+
+  c2:
+    <<: *container-template
+    image: python:3.9
+    container_name: c2_${COMPOSE_PROJECT_NAME}
+    hostname: c2
+    networks:
+      subnet:
+        aliases: ["c2"]
+        ipv4_address: 192.168.${COMPOSE_PROJECT_NAME}.20
+    environment:
+      <<: *container-template-env
+      CONTAINER_NAME: c2
+      INSTALL_WAIT_FOR: |-
+        echo "Wait for containers ['c1'] reaching check point after INSTALL ..." ;
+        while [ ! -e /$$SHARED_VOLUME/INSTALL.c1.fd ]; do ( sleep 1 ); done ;
+        rm /$$SHARED_VOLUME/INSTALL.c1.fd ;
+        echo "Continue."
+      EXECUTE_WAIT_FOR: |-
+        echo "Wait for containers ['c1'] reaching check point after EXECUTE ..." ;
+        while [ ! -e /$$SHARED_VOLUME/EXECUTE.c1.fd ]; do ( sleep 1 ); done ;
+        rm /$$SHARED_VOLUME/EXECUTE.c1.fd ;
+        echo "Continue."
+      INSTALL: |-
+        set -x ;
+        echo install_cmd_prefix B install_option B.b ;
+        echo "No post_install_cmd." ;
+        echo install_cmd_prefix C install_option C.c ;
+        echo "No post_install_cmd." ;
+      EXECUTE: |-
+        sleep 60
+
+  

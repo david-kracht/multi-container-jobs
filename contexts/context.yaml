@@ -1,0 +1,67 @@
+templates:
+  - &base-install
+    install_cmd_prefix: echo install_cmd_prefix
+    install_option: ""
+    post_install_cmd: echo "No post_install_cmd."
+
+  - commands:
+      EXECUTE: &execute |-
+        sleep 60
+
+##############################################################################
+apiVersion: multi-container-job/v0
+kind: job
+
+spec:
+
+  deps:
+    a: A
+    b: B
+    c: C
+
+  deployments:
+    A:
+      <<: *base-install
+      reference: a
+      install_option: install_option A.a
+    B:
+      <<: *base-install
+      reference: b
+      install_option: install_option B.b
+    C:
+      <<: *base-install
+      reference: c
+      install_option: install_option C.c
+
+  states:
+    - INSTALL
+    - EXECUTE
+    - END
+
+  shared_volume: .:/shared_volume
+  network_name: subnet_${COMPOSE_PROJECT_NAME}
+  subnet: 192.168.${COMPOSE_PROJECT_NAME}.0/24
+  network_interface: eth
+  timeout: "60"
+  wait_sleep_interval: "1"
+
+  containers:
+    c1:
+      image: &image python:3.9
+      ipv4_address: 192.168.${COMPOSE_PROJECT_NAME}.10
+      deployments:
+        - A
+      commands:
+        EXECUTE: *execute
+
+    c2:
+      image: *image
+      ipv4_address: 192.168.${COMPOSE_PROJECT_NAME}.20
+      deployments:
+        - B
+        - C
+      sync:
+        INSTALL: [c1]
+        EXECUTE: [c1]
+      commands:
+        EXECUTE: *execute

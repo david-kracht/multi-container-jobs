@@ -1,0 +1,93 @@
+version: "3.9"
+
+networks: #network created via template (based on isolated subnets) defined via env. variables
+  subnet:
+    name: {{spec.network_name}}
+    ipam:
+      config:
+        - subnet: {{spec.subnet}}
+
+x-container-template: &container-template
+  user: ${U_ID}:${G_ID}  # podman-compose needs user 0:0 mapped to the user calling podman, by default
+  privileged: true 
+  cap_add:
+    - NET_ADMIN
+  sysctls:
+    - net.ipv6.conf.all.disable_ipv6=0
+  entrypoint: []
+  working_dir: ${HOME}
+  environment: &container-template-env
+    SHARED_VOLUME: {{spec.shared_volume.split(":")[-1]}}
+  volumes:
+    - {{spec.shared_volume}}
+    - ${HOME}:${HOME}
+  networks:
+    subnet:
+      aliases: []
+  command: |-
+    bash -c '
+    set -x ;
+    export IP=$$(hostname -I) ;
+
+  {% set idx = spec.states.index("EXECUTE") %}
+  {%- for cmd in spec.states %}
+    bash -c "$${{cmd}}" ;
+    {% if loop.index0 == idx+1 %}timeout {{spec.timeout}} {% endif %}bash -c "$${{cmd}}_WAIT_AFTER" ;
+    bash -c "$${{cmd}}_WAIT_FOR" ;
+  {%- endfor %}
+    '
+
+services:
+
+  {% for container_name, c  in spec.containers.items() -%}
+  {{container_name}}:
+    <<: *container-template
+    image: {{ c.image }}
+    container_name: {{container_name}}_${COMPOSE_PROJECT_NAME}
+    hostname: {{container_name}}
+    networks:
+      subnet:
+        aliases: ["{{container_name}}"]
+        {%- if c.ipv4_address %}
+        ipv4_address: {{c.ipv4_address}}
+        {%- endif %}
+    environment:
+      <<: *container-template-env
+      CONTAINER_NAME: {{container_name}}
+    {%- for state in spec.states -%}
+
+      {%- if internal["WAIT_FOR"][container_name][state] %}
+      {% set fds = format_list( internal["WAIT_FOR"][container_name][state], "/$$SHARED_VOLUME/%s.%s.fd" % (state,"%s") ) -%}
+      {{state}}_WAIT_FOR: |-
+        echo "Wait for containers {{internal["WAIT_FOR"][container_name][state]}} reaching check point after {{state}} ..." ;
+        while {{ format_list(fds, "[ ! -e %s ]")|join(" || ") }}; do ( sleep {{spec.wait_sleep_interval}} ); done ;
+        rm {{fds|join(" ")}} ;
+        echo "Continue."
+      {%- endif %}
+
+      {%- if internal["WAITS"][container_name][state] %}
+      {{state}}_WAIT_AFTER: |-
+        touch $$SHARED_VOLUME/{{state}}.{{container_name}}.fd ;
+        echo "Wait for removal of {{state}}.{{container_name}}.fd ..." ;
+        timeout {{spec.timeout}} bash -c "while [ -f $$SHARED_VOLUME/{{state}}.{{container_name}}.fd ]; do sleep {{spec.wait_sleep_interval}}; done;"
+      {%- endif %}
+
+    {%- endfor %}
+
+    {%- if c.deployments and "INSTALL" not in c.commands %}
+      INSTALL: |-
+        set -x ;
+      {%- for deployment in c.deployments %}{% set dep = spec.deployments[deployment].reference %}
+        {{spec.deployments[deployment].install_cmd_prefix}} {{spec.deps[dep]}} {{spec.deployments[deployment].install_option.rstrip("\n ;").replace("\n","\n        ")}} ;
+        {{spec.deployments[deployment].post_install_cmd.rstrip("\n ;").replace("\n","\n        ") }} ;
+      {%- endfor %}
+    {%- endif %}
+
+    {%- if c.commands %}
+      {%- for key,value in c.commands.items() %}
+      {{key}}: |-
+        {{value.replace("\n","\n        ")}}
+      {%- endfor %}
+    {%- endif %}
+
+  {% endfor %}

@@ -1,0 +1,123 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: demo
+  app: demo
+spec:
+  template:
+    spec:
+      volumes:
+      - name: some-shared-volume-name
+        emptyDir: {}
+
+      containers:
+      
+      - name: c1
+        hostname: c1
+        image: python:3.9
+        command:
+          - /bin/bash
+          - -c
+          - |-
+            set -x ;
+            export IP=$$(hostname -I) ;
+
+          
+            bash -c "$$INSTALL" ;
+            bash -c "$$INSTALL_WAIT_AFTER" ;
+            bash -c "$$INSTALL_WAIT_FOR" ;
+            bash -c "$$EXECUTE" ;
+            bash -c "$$EXECUTE_WAIT_AFTER" ;
+            bash -c "$$EXECUTE_WAIT_FOR" ;
+            bash -c "$$END" ;
+            timeout 60 bash -c "$$END_WAIT_AFTER" ;
+            bash -c "$$END_WAIT_FOR" ;
+
+        workingDir: /shared_volume
+
+        env:
+          - name: SHARED_VOLUME
+            value: /shared_volume
+          - name: HOME
+            value: /shared_volume
+          - name: INSTALL_WAIT_AFTER
+            value: |-
+              touch $$SHARED_VOLUME/INSTALL.c1.fd ;
+              echo "Wait for removal of INSTALL.c1.fd ..." ;
+              timeout 60 bash -c "while [ -f $$SHARED_VOLUME/INSTALL.c1.fd ]; do sleep 1; done;"
+          - name: EXECUTE_WAIT_AFTER
+            value: |-
+              touch $$SHARED_VOLUME/EXECUTE.c1.fd ;
+              echo "Wait for removal of EXECUTE.c1.fd ..." ;
+              timeout 60 bash -c "while [ -f $$SHARED_VOLUME/EXECUTE.c1.fd ]; do sleep 1; done;"
+          - name: INSTALL
+            value: |-
+              set -x ;
+              echo install_cmd_prefix A install_option A.a ;
+              echo "No post_install_cmd." ;
+          - name: EXECUTE
+            value: |-
+              sleep 60
+
+        volumeMounts:
+        - name: some-shared-volume-name
+          mountPath: /shared_volume
+
+      
+      - name: c2
+        hostname: c2
+        image: python:3.9
+        command:
+          - /bin/bash
+          - -c
+          - |-
+            set -x ;
+            export IP=$$(hostname -I) ;
+
+          
+            bash -c "$$INSTALL" ;
+            bash -c "$$INSTALL_WAIT_AFTER" ;
+            bash -c "$$INSTALL_WAIT_FOR" ;
+            bash -c "$$EXECUTE" ;
+            bash -c "$$EXECUTE_WAIT_AFTER" ;
+            bash -c "$$EXECUTE_WAIT_FOR" ;
+            bash -c "$$END" ;
+            timeout 60 bash -c "$$END_WAIT_AFTER" ;
+            bash -c "$$END_WAIT_FOR" ;
+
+        workingDir: /shared_volume
+
+        env:
+          - name: SHARED_VOLUME
+            value: /shared_volume
+          - name: HOME
+            value: /shared_volume
+          - name: INSTALL_WAIT_FOR
+            value: |-
+              echo "Wait for containers ['c1'] reaching check point after INSTALL ..." ;
+              while [ ! -e /$$SHARED_VOLUME/INSTALL.c1.fd ]; do ( sleep 1 ); done ;
+              rm /$$SHARED_VOLUME/INSTALL.c1.fd ;
+              echo "Continue."
+          - name: EXECUTE_WAIT_FOR
+            value: |-
+              echo "Wait for containers ['c1'] reaching check point after EXECUTE ..." ;
+              while [ ! -e /$$SHARED_VOLUME/EXECUTE.c1.fd ]; do ( sleep 1 ); done ;
+              rm /$$SHARED_VOLUME/EXECUTE.c1.fd ;
+              echo "Continue."
+          - name: INSTALL
+            value: |-
+              set -x ;
+              echo install_cmd_prefix B install_option B.b ;
+              echo "No post_install_cmd." ;
+              echo install_cmd_prefix C install_option C.c ;
+              echo "No post_install_cmd." ;
+          - name: EXECUTE
+            value: |-
+              sleep 60
+
+        volumeMounts:
+        - name: some-shared-volume-name
+          mountPath: /shared_volume
+
+      
+      restartPolicy: Never

@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: demo
+  app: demo
+spec:
+  template:
+    spec:
+      volumes:
+      - name: some-shared-volume-name
+        emptyDir: {}
+
+      containers:
+      {% for container_name, c  in spec.containers.items() %}
+      - name: {{container_name}}
+        hostname: {{container_name}}
+        image: {{ c.image }}
+        command:
+          - /bin/bash
+          - -c
+          - |-
+            set -x ;
+            export IP=$$(hostname -I) ;
+
+          {% set idx = spec.states.index("EXECUTE") %}
+          {%- for cmd in spec.states %}
+            bash -c "$${{cmd}}" ;
+            {% if loop.index0 == idx+1 %}timeout {{spec.timeout}} {% endif %}bash -c "$${{cmd}}_WAIT_AFTER" ;
+            bash -c "$${{cmd}}_WAIT_FOR" ;
+          {%- endfor %}
+
+        workingDir: {{spec.shared_volume.split(":")[-1]}}
+
+        env:
+          - name: SHARED_VOLUME
+            value: {{spec.shared_volume.split(":")[-1]}}
+          - name: HOME
+            value: {{spec.shared_volume.split(":")[-1]}}
+
+        {%- for state in spec.states -%}
+
+          {%- if internal["WAIT_FOR"][container_name][state] %}
+          {% set fds = format_list( internal["WAIT_FOR"][container_name][state], "/$$SHARED_VOLUME/%s.%s.fd" % (state,"%s") ) -%}
+          - name: {{state}}_WAIT_FOR
+            value: |-
+              echo "Wait for containers {{internal["WAIT_FOR"][container_name][state]}} reaching check point after {{state}} ..." ;
+              while {{ format_list(fds, "[ ! -e %s ]")|join(" || ") }}; do ( sleep {{spec.wait_sleep_interval}} ); done ;
+              rm {{fds|join(" ")}} ;
+              echo "Continue."
+          {%- endif %}
+
+          {%- if internal["WAITS"][container_name][state] %}
+          - name: {{state}}_WAIT_AFTER
+            value: |-
+              touch $$SHARED_VOLUME/{{state}}.{{container_name}}.fd ;
+              echo "Wait for removal of {{state}}.{{container_name}}.fd ..." ;
+              timeout {{spec.timeout}} bash -c "while [ -f $$SHARED_VOLUME/{{state}}.{{container_name}}.fd ]; do sleep {{spec.wait_sleep_interval}}; done;"
+          {%- endif %}
+
+        {%- endfor %}
+
+        {%- if c.deployments and "INSTALL" not in c.commands %}
+          - name: INSTALL
+            value: |-
+              set -x ;
+          {%- for deployment in c.deployments %}{% set dep = spec.deployments[deployment].reference %}
+              {{spec.deployments[deployment].install_cmd_prefix}} {{spec.deps[dep]}} {{spec.deployments[deployment].install_option.rstrip("\n ;").replace("\n","\n        ")}} ;
+              {{spec.deployments[deployment].post_install_cmd.rstrip("\n ;").replace("\n","\n              ") }} ;
+          {%- endfor %}
+        {%- endif %}
+
+        {%- if c.commands %}
+          {%- for key,value in c.commands.items() %}
+          - name: {{key}}
+            value: |-
+              {{value.replace("\n","\n              ")}}
+          {%- endfor %}
+        {%- endif %}
+
+        volumeMounts:
+        - name: some-shared-volume-name
+          mountPath: {{spec.shared_volume.split(":")[-1]}}
+
+      {% endfor %}
+      restartPolicy: Never
